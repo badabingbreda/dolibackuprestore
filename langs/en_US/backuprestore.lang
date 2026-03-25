@@ -1,0 +1,123 @@
+# Copyright (C) 2024 Your Name <your@email.com>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+
+# Module info
+BackupRestoreDescription=Backup and restore Dolibarr database and documents folder
+BackupRestore=Backup & Restore
+BackupList=Backup List
+NewBackup=New Backup
+
+# Menu
+BackupRestoreMenu=Backup & Restore
+
+# Actions
+CreateBackup=Create Backup
+RunBackup=Run Backup
+RestoreBackup=Restore Backup
+DeleteBackup=Delete Backup
+DownloadBackup=Download Backup
+
+# Status labels
+BackupStatusPending=Pending
+BackupStatusRunning=Running
+BackupStatusSuccess=Success
+BackupStatusFailed=Failed
+BackupStatusRestored=Restored
+
+# Backup types
+BackupTypeFull=Full (DB + Documents)
+BackupTypeDatabase=Database only
+BackupTypeDocuments=Documents only
+
+# Storage types
+StorageTypeLocal=Local storage
+StorageTypeFtp=FTP
+StorageTypeSftp=SFTP
+
+# Fields
+BackupRef=Reference
+BackupDate=Backup date
+BackupStorageType=Storage type
+BackupStoragePath=Storage path
+BackupFileSize=File size
+BackupType=Backup type
+BackupStatus=Status
+BackupNote=Note
+BackupCreatedBy=Created by
+DolibarrVersion=Dolibarr version
+
+# Admin setup
+BackupRestoreSetup=Backup & Restore Setup
+BackupRestoreSetupDescription=Configure backup storage and scheduling options.
+StorageConfiguration=Storage Configuration
+StorageType=Storage type
+LocalStoragePath=Local backup path
+LocalStoragePathHelp=Path where backups will be stored. Absolute paths (starting with / or drive letter) are used as-is. Relative paths are resolved against the Dolibarr documents directory (DOL_DATA_ROOT). Leave empty to use the default.
+LocalStoragePathStatus=Path status
+LocalStoragePathOk=Directory exists and is writable
+LocalStoragePathNotFound=Directory does not exist and could not be created
+LocalStoragePathNotWritable=Directory exists but is not writable by the web server
+RetentionDays=Retention (days)
+RetentionDaysHelp=Number of days to keep backups. Set to 0 to disable automatic deletion.
+FtpHost=FTP Host
+FtpPort=FTP Port
+FtpUser=FTP Username
+FtpPassword=FTP Password
+FtpRemotePath=FTP Remote Path
+SftpHost=SFTP Host
+SftpPort=SFTP Port
+SftpUser=SFTP Username
+SftpPassword=SFTP Password
+SftpPrivateKey=SFTP Private Key Path
+SftpRemotePath=SFTP Remote Path
+TestConnection=Test Connection
+ConnectionSuccess=Connection successful
+ConnectionFailed=Connection failed
+
+# Backup creation form
+BackupOptions=Backup Options
+IncludeDatabase=Include database
+IncludeDocuments=Include documents folder
+BackupComment=Comment (optional)
+StartBackup=Start Backup Now
+
+# Restore
+RestoreConfirmTitle=Confirm Restore
+RestoreWarning=WARNING: Restoring a backup will overwrite your current database and/or documents. This action cannot be undone.
+RestoreConfirmText=To confirm, type RESTORE in the field below:
+RestoreConfirmPlaceholder=Type RESTORE to confirm
+RestoreButton=Restore Now
+RestoreSuccess=Backup restored successfully. Please reload the application.
+RestoreFailed=Restore failed. Check the error log for details.
+PreRestoreBackupCreated=A pre-restore backup was automatically created before restoring.
+
+# Messages
+BackupStarted=Backup started. This may take a few minutes.
+BackupSuccess=Backup completed successfully.
+BackupFailed=Backup failed. Check the error log for details.
+BackupDeleted=Backup deleted successfully.
+BackupDeleteFailed=Failed to delete backup.
+NoBackupsFound=No backups found. Click "New Backup" to create one.
+BackupFileNotFound=Backup file not found on storage.
+
+# Errors
+ErrorStorageNotConfigured=Storage is not configured. Please go to the module setup page.
+ErrorDatabaseDump=Failed to dump the database.
+ErrorCreateArchive=Failed to create the backup archive.
+ErrorUploadRemote=Failed to upload backup to remote storage.
+ErrorDownloadRemote=Failed to download backup from remote storage.
+ErrorRestoreDatabase=Failed to restore the database.
+ErrorRestoreDocuments=Failed to restore the documents folder.
+ErrorInvalidConfirmation=Invalid confirmation text. Please type RESTORE exactly.
+ErrorPhpZipExtension=The PHP ZipArchive extension is required but not available.
+ErrorPhpFtpExtension=The PHP FTP extension is required for FTP storage but is not available.
+
+# Sizes
+SizeBytes=bytes
+SizeKB=KB
+SizeMB=MB
+SizeGB=GB
