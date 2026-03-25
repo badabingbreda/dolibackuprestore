@@ -115,7 +115,7 @@ class LocalStorage
      *
      * @return string|false Absolute path, or false if not configured
      */
-    private function getStorageDir()
+    public function getStorageDir()
     {
         global $conf;
 

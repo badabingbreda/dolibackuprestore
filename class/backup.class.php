@@ -309,9 +309,19 @@ class Backup extends CommonObject
                 dol_syslog('BackupRestore::run - Starting documents archive', LOG_DEBUG);
                 $docsRoot = DOL_DATA_ROOT;
                 if (!empty($docsRoot) && is_dir($docsRoot)) {
-                    $this->addDirectoryToZip($zip, $docsRoot, 'documents', array(
-                        $tempDir, // exclude temp dir to avoid recursion
-                    ));
+                    // Build the exclusion list: always exclude the temp dir (to avoid
+                    // recursion) and the local backup storage directory (to prevent
+                    // previous backup ZIPs from being included in new backups).
+                    $excludeDirs = array($tempDir);
+
+                    require_once __DIR__ . '/storageadapter/LocalStorage.class.php';
+                    $localAdapter   = new LocalStorage();
+                    $localStorageDir = $localAdapter->getStorageDir();
+                    if ($localStorageDir) {
+                        $excludeDirs[] = $localStorageDir;
+                    }
+
+                    $this->addDirectoryToZip($zip, $docsRoot, 'documents', $excludeDirs);
                 }
                 dol_syslog('BackupRestore::run - Documents archive complete', LOG_DEBUG);
             }

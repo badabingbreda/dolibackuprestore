@@ -120,6 +120,7 @@ NoBackupsFound=No backups found. Click "New Backup" to create one.
 BackupFileNotFound=Backup file not found on storage.
 
 # Errors
+DownloadOnlyForLocalStorage=Download is only available for backups stored on local storage. FTP/SFTP backups must be downloaded directly from the remote server.
 ErrorStorageNotConfigured=Storage is not configured. Please go to the module setup page.
 ErrorDatabaseDump=Failed to dump the database.
 ErrorCreateArchive=Failed to create the backup archive.

@@ -42,6 +42,7 @@ if (empty($user->rights->backuprestore->read)) {
 $langs->loadLangs(array('backuprestore@backuprestore'));
 
 $backupId = GETPOST('id', 'int');
+$action   = GETPOST('action', 'aZ09');
 
 if ($backupId <= 0) {
     header('Location: ' . dol_buildpath('/backuprestore/index.php', 1));
@@ -52,6 +53,54 @@ $backup = new Backup($db);
 if ($backup->fetch($backupId) <= 0) {
     setEventMessages($langs->trans('BackupFileNotFound'), null, 'errors');
     header('Location: ' . dol_buildpath('/backuprestore/index.php', 1));
+    exit;
+}
+
+// ---- Handle download action ----
+// Only local storage backups can be downloaded directly through the browser.
+// FTP/SFTP files live on a remote server and cannot be streamed this way.
+if ($action === 'download' && !empty($user->rights->backuprestore->read)) {
+    if ($backup->storage_type !== 'local') {
+        setEventMessages($langs->trans('DownloadOnlyForLocalStorage'), null, 'errors');
+        header('Location: ' . $_SERVER['PHP_SELF'] . '?id=' . $backupId);
+        exit;
+    }
+
+    $filePath = $backup->storage_path;
+
+    if (empty($filePath) || !file_exists($filePath) || !is_readable($filePath)) {
+        setEventMessages($langs->trans('BackupFileNotFound'), null, 'errors');
+        header('Location: ' . $_SERVER['PHP_SELF'] . '?id=' . $backupId);
+        exit;
+    }
+
+    // Security: ensure the file is inside DOL_DATA_ROOT to prevent path traversal
+    $realFile    = realpath($filePath);
+    $realDataRoot = realpath(DOL_DATA_ROOT);
+    if ($realFile === false || $realDataRoot === false
+        || strpos($realFile, $realDataRoot . DIRECTORY_SEPARATOR) !== 0) {
+        dol_syslog('BackupRestore::download - Path traversal attempt blocked: ' . $filePath, LOG_ERR);
+        accessforbidden();
+    }
+
+    $fileName = basename($realFile);
+    $fileSize = filesize($realFile);
+
+    // Stream the file to the browser
+    header('Content-Type: application/zip');
+    header('Content-Disposition: attachment; filename="' . $fileName . '"');
+    header('Content-Length: ' . $fileSize);
+    header('Cache-Control: no-cache, no-store, must-revalidate');
+    header('Pragma: no-cache');
+    header('Expires: 0');
+
+    // Flush any output buffering before streaming
+    if (ob_get_level()) {
+        ob_end_clean();
+    }
+
+    readfile($realFile);
+    $db->close();
     exit;
 }
 
@@ -114,6 +163,16 @@ print '</table>';
 // ---- Actions ----
 print '<br>';
 print '<div class="tabsAction">';
+
+// Download button — only for local storage backups that exist on disk
+if (!empty($user->rights->backuprestore->read)
+    && $backup->storage_type === 'local'
+    && !empty($backup->storage_path)
+    && file_exists($backup->storage_path)) {
+    print '<a class="butAction" href="' . $_SERVER['PHP_SELF'] . '?id=' . $backup->id . '&action=download">';
+    print img_picto($langs->trans('DownloadBackup'), 'download') . ' ' . $langs->trans('DownloadBackup');
+    print '</a>';
+}
 
 if ((int) $backup->status === Backup::STATUS_SUCCESS && !empty($user->rights->backuprestore->restore)) {
     print '<a class="butAction" href="' . dol_buildpath('/backuprestore/restore.php', 1) . '?id=' . $backup->id . '">' . $langs->trans('RestoreBackup') . '</a>';
