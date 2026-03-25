@@ -92,6 +92,10 @@ SftpRemotePath=SFTP Remote Path
 TestConnection=Test Connection
 ConnectionSuccess=Connection successful
 ConnectionFailed=Connection failed
+PhpExtensionStatus=PHP extension status
+PhpExtensionAvailable=Extension "%s" is available ✓
+PhpExtensionMissing=Extension "%s" is NOT available
+PhpExtensionInstallHelp=Install with: sudo apt-get install %s (Linux) or enable in php.ini (Windows)
 
 # Backup creation form
 BackupOptions=Backup Options

@@ -236,6 +236,19 @@ print load_fiche_titre($langs->trans('StorageTypeFtp'), '', '');
 print '<table class="noborder centpercent">';
 print '<tr class="liste_titre"><td>' . $langs->trans('Parameter') . '</td><td>' . $langs->trans('Value') . '</td></tr>';
 
+// PHP FTP extension availability check
+$ftpExtAvailable = function_exists('ftp_connect');
+print '<tr class="oddeven">';
+print '<td>' . $langs->trans('PhpExtensionStatus') . '</td>';
+print '<td>';
+if ($ftpExtAvailable) {
+    print '<span class="badge badge-status1 status1">&#10003; ' . $langs->trans('PhpExtensionAvailable', 'ftp') . '</span>';
+} else {
+    print '<span class="badge badge-status8 status8">&#10007; ' . $langs->trans('PhpExtensionMissing', 'ftp') . '</span>';
+    print ' <span class="opacitymedium">' . $langs->trans('PhpExtensionInstallHelp', 'php-ftp') . '</span>';
+}
+print '</td></tr>';
+
 $ftpFields = array(
     'BACKUPRESTORE_FTP_HOST'        => array('label' => 'FtpHost',       'type' => 'text',     'default' => ''),
     'BACKUPRESTORE_FTP_PORT'        => array('label' => 'FtpPort',       'type' => 'number',   'default' => '21'),
@@ -266,6 +279,19 @@ print '<br>';
 print load_fiche_titre($langs->trans('StorageTypeSftp'), '', '');
 print '<table class="noborder centpercent">';
 print '<tr class="liste_titre"><td>' . $langs->trans('Parameter') . '</td><td>' . $langs->trans('Value') . '</td></tr>';
+
+// PHP SSH2 extension availability check
+$sshExtAvailable = function_exists('ssh2_connect');
+print '<tr class="oddeven">';
+print '<td>' . $langs->trans('PhpExtensionStatus') . '</td>';
+print '<td>';
+if ($sshExtAvailable) {
+    print '<span class="badge badge-status1 status1">&#10003; ' . $langs->trans('PhpExtensionAvailable', 'ssh2') . '</span>';
+} else {
+    print '<span class="badge badge-status8 status8">&#10007; ' . $langs->trans('PhpExtensionMissing', 'ssh2') . '</span>';
+    print ' <span class="opacitymedium">' . $langs->trans('PhpExtensionInstallHelp', 'php-ssh2') . '</span>';
+}
+print '</td></tr>';
 
 $sftpFields = array(
     'BACKUPRESTORE_SFTP_HOST'        => array('label' => 'SftpHost',       'type' => 'text',     'default' => ''),
