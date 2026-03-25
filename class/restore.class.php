@@ -81,7 +81,9 @@ class Restore
         $safetyResult = $safetyBackup->run($user, 'full', 'local', 'Pre-restore safety backup before restoring ' . $backup->ref);
         if ($safetyResult < 0) {
             dol_syslog('Restore::run - WARNING: Pre-restore backup failed: ' . $safetyBackup->error, LOG_WARNING);
-            // Non-fatal: continue with restore
+            // Surface the failure to the caller via errors array so the UI can warn the user,
+            // but do not abort — the user explicitly requested the restore.
+            $this->errors[] = 'PreRestoreBackupFailed: ' . $safetyBackup->error;
         }
 
         // Step 2: Get the archive file (download if remote)
@@ -119,6 +121,16 @@ class Restore
         $extractDir = $tempDir . '/' . $backup->ref . '_extracted';
         dol_mkdir($extractDir);
 
+        // Zip-slip protection: resolve the extraction directory AFTER creating it so
+        // realpath() returns the canonical path (not false). Abort if it cannot be resolved.
+        $realExtractDir = realpath($extractDir);
+        if ($realExtractDir === false) {
+            $this->error = 'Cannot create or resolve extraction directory: ' . $extractDir;
+            @unlink($localArchivePath);
+            dol_syslog('Restore::run - ' . $this->error, LOG_ERR);
+            return -1;
+        }
+
         $zip = new ZipArchive();
         if ($zip->open($localArchivePath) !== true) {
             $this->error = 'Cannot open ZIP archive: ' . $localArchivePath;
@@ -126,8 +138,7 @@ class Restore
             return -1;
         }
 
-        // Zip-slip protection: validate every entry stays within $extractDir
-        $realExtractDir = realpath($extractDir);
+        // Zip-slip protection: validate every entry stays within $realExtractDir
         for ($i = 0; $i < $zip->numFiles; $i++) {
             $entryName = $zip->getNameIndex($i);
             // Resolve the target path without actually creating it
@@ -149,6 +160,11 @@ class Restore
         @unlink($localArchivePath);
 
         dol_syslog('Restore::run - Archive extracted to: ' . $extractDir, LOG_DEBUG);
+
+        // Zip-slip phase 2: remove any symlinks that escaped $realExtractDir after extraction.
+        // A ZIP entry can contain a symlink whose name is inside the dir but whose target
+        // points outside — the name-based check above cannot catch this.
+        $this->removeEscapingSymlinks($extractDir, $realExtractDir);
 
         // Step 4: Restore database
         if ($restoreDb && file_exists($extractDir . '/database.sql')) {
@@ -199,96 +215,130 @@ class Restore
             return -1;
         }
 
-        $sql = file_get_contents($sqlFile);
-        if ($sql === false) {
+        $fh = fopen($sqlFile, 'r');
+        if ($fh === false) {
             $this->error = 'Cannot read SQL dump file: ' . $sqlFile;
             return -1;
         }
 
-        // Split into individual statements
-        $statements = $this->splitSqlStatements($sql);
+        // Allowlist of permitted SQL statement types for restore safety.
+        // UPDATE is intentionally excluded to prevent a malicious/corrupted dump
+        // from silently modifying arbitrary rows outside of a full table replace.
+        $allowedStatementTypes = array('INSERT', 'CREATE', 'DROP', 'ALTER', 'SET', 'LOCK', 'UNLOCK');
 
         $this->db->begin();
 
-        // Allowlist of permitted SQL statement types for restore safety
-        $allowedStatementTypes = array('INSERT', 'UPDATE', 'CREATE', 'DROP', 'ALTER', 'SET', 'LOCK', 'UNLOCK');
+        $current    = '';
+        $inString   = false;
+        $stringChar = '';
+        // Track whether the last character appended to $current was a backslash,
+        // so we can correctly handle escape sequences that span line boundaries.
+        $lastCharWasBackslash = false;
+        // Track INSERT/SET failures so we can roll back if data is inconsistent.
+        $hasDataErrors = false;
 
-        foreach ($statements as $statement) {
-            $statement = trim($statement);
-            if (empty($statement) || strpos($statement, '--') === 0) {
+        // Stream-parse the file line by line to avoid loading the entire dump into memory.
+        while (($line = fgets($fh)) !== false) {
+            // Skip pure comment lines before accumulating (only when not inside a string)
+            $trimmedLine = ltrim($line);
+            if (!$inString && (strpos($trimmedLine, '--') === 0 || strpos($trimmedLine, '#') === 0)) {
                 continue;
             }
 
-            // Extract the first keyword to validate statement type
-            $firstWord = strtoupper(strtok($statement, " \t\n\r"));
-            if (!in_array($firstWord, $allowedStatementTypes)) {
-                dol_syslog('Restore::restoreDatabase - Skipping disallowed statement type: ' . $firstWord, LOG_WARNING);
-                continue;
-            }
+            $len = strlen($line);
+            for ($i = 0; $i < $len; $i++) {
+                $char = $line[$i];
 
-            $resql = $this->db->query($statement);
-            if (!$resql) {
-                $errMsg = $this->db->lasterror();
-                // Ignore "table already exists" type errors for CREATE TABLE
-                if (strpos(strtoupper($statement), 'CREATE TABLE') !== false && strpos($errMsg, 'already exists') !== false) {
-                    continue;
+                if ($inString) {
+                    $current .= $char;
+                    if ($char === '\\') {
+                        // Toggle: two consecutive backslashes cancel each other out.
+                        $lastCharWasBackslash = !$lastCharWasBackslash;
+                    } elseif ($char === $stringChar && !$lastCharWasBackslash) {
+                        // Closing quote that is NOT preceded by an odd number of backslashes.
+                        $inString             = false;
+                        $lastCharWasBackslash = false;
+                    } else {
+                        $lastCharWasBackslash = false;
+                    }
+                } else {
+                    $lastCharWasBackslash = false;
+                    if ($char === "'" || $char === '"' || $char === '`') {
+                        $inString   = true;
+                        $stringChar = $char;
+                        $current   .= $char;
+                    } elseif ($char === ';') {
+                        $statement = trim($current);
+                        $current   = '';
+
+                        if (empty($statement)) {
+                            continue;
+                        }
+
+                        // Extract the first keyword to validate statement type
+                        $firstWord = strtoupper(strtok($statement, " \t\n\r"));
+                        if (!in_array($firstWord, $allowedStatementTypes)) {
+                            dol_syslog('Restore::restoreDatabase - Skipping disallowed statement type: ' . $firstWord, LOG_WARNING);
+                            continue;
+                        }
+
+                        $resql = $this->db->query($statement);
+                        if (!$resql) {
+                            $errMsg = $this->db->lasterror();
+                            // Ignore "table already exists" for CREATE TABLE (idempotent re-run)
+                            if (strpos(strtoupper($statement), 'CREATE TABLE') !== false
+                                && strpos($errMsg, 'already exists') !== false) {
+                                continue;
+                            }
+                            // DROP TABLE and structural failures are critical — roll back immediately
+                            if (in_array($firstWord, array('DROP', 'ALTER'))) {
+                                fclose($fh);
+                                $this->db->rollback();
+                                $this->error = 'Critical SQL error (' . $firstWord . '): ' . $errMsg
+                                    . ' | Statement: ' . substr($statement, 0, 200);
+                                dol_syslog('Restore::restoreDatabase - ' . $this->error, LOG_ERR);
+                                return -1;
+                            }
+                            // Data statement failures: record the error and continue so we can
+                            // roll back the whole transaction at the end rather than committing
+                            // a partially-restored table.
+                            $hasDataErrors = true;
+                            $this->errors[] = 'SQL error (' . $firstWord . '): ' . $errMsg
+                                . ' | Statement: ' . substr($statement, 0, 200);
+                            dol_syslog('Restore::restoreDatabase - SQL error: ' . $errMsg . ' | Statement: ' . substr($statement, 0, 200), LOG_WARNING);
+                        }
+                    } else {
+                        $current .= $char;
+                    }
                 }
-                dol_syslog('Restore::restoreDatabase - SQL error: ' . $errMsg . ' | Statement: ' . substr($statement, 0, 200), LOG_WARNING);
-                // Continue on non-critical errors
             }
+        }
+
+        fclose($fh);
+
+        // Execute any trailing statement without a terminating semicolon
+        $statement = trim($current);
+        if (!empty($statement)) {
+            $firstWord = strtoupper(strtok($statement, " \t\n\r"));
+            if (in_array($firstWord, $allowedStatementTypes)) {
+                $resql = $this->db->query($statement);
+                if (!$resql && in_array($firstWord, array('INSERT', 'SET'))) {
+                    $hasDataErrors = true;
+                    $this->errors[] = 'SQL error (' . $firstWord . '): ' . $this->db->lasterror();
+                }
+            }
+        }
+
+        // If any data statements failed, roll back to avoid a partially-restored database.
+        if ($hasDataErrors) {
+            $this->db->rollback();
+            $this->error = 'Restore rolled back due to SQL errors. Database is unchanged. See $this->errors for details.';
+            dol_syslog('Restore::restoreDatabase - ' . $this->error, LOG_ERR);
+            return -1;
         }
 
         $this->db->commit();
         return 1;
-    }
-
-    /**
-     * Split a SQL dump string into individual statements.
-     *
-     * @param string $sql Full SQL dump
-     * @return array       Array of SQL statements
-     */
-    private function splitSqlStatements($sql)
-    {
-        $statements = array();
-        $current    = '';
-        $inString   = false;
-        $stringChar = '';
-        $len        = strlen($sql);
-
-        for ($i = 0; $i < $len; $i++) {
-            $char = $sql[$i];
-
-            if ($inString) {
-                $current .= $char;
-                if ($char === $stringChar && ($i === 0 || $sql[$i - 1] !== '\\')) {
-                    $inString = false;
-                }
-            } else {
-                if ($char === "'" || $char === '"' || $char === '`') {
-                    $inString   = true;
-                    $stringChar = $char;
-                    $current   .= $char;
-                } elseif ($char === ';') {
-                    $current .= $char;
-                    $trimmed  = trim($current);
-                    if (!empty($trimmed)) {
-                        $statements[] = $trimmed;
-                    }
-                    $current = '';
-                } else {
-                    $current .= $char;
-                }
-            }
-        }
-
-        // Last statement without semicolon
-        $trimmed = trim($current);
-        if (!empty($trimmed)) {
-            $statements[] = $trimmed;
-        }
-
-        return $statements;
     }
 
     /**
@@ -358,6 +408,50 @@ class Restore
         }
 
         return true;
+    }
+
+    /**
+     * Recursively scan $dir and remove any symlinks whose resolved target lies
+     * outside $allowedRoot. This is the second phase of zip-slip protection:
+     * the name-based check before extraction cannot detect symlinks whose *target*
+     * escapes the extraction directory.
+     *
+     * @param string $dir         Directory to scan (absolute path)
+     * @param string $allowedRoot Canonical root that all symlink targets must be under
+     * @return void
+     */
+    private function removeEscapingSymlinks($dir, $allowedRoot)
+    {
+        if (!is_dir($dir)) {
+            return;
+        }
+
+        $allowedRoot = rtrim($allowedRoot, DIRECTORY_SEPARATOR);
+        $items = scandir($dir);
+        if ($items === false) {
+            return;
+        }
+
+        foreach ($items as $item) {
+            if ($item === '.' || $item === '..') {
+                continue;
+            }
+
+            $path = $dir . DIRECTORY_SEPARATOR . $item;
+
+            if (is_link($path)) {
+                // Resolve the symlink target
+                $target = realpath($path);
+                if ($target === false
+                    || strpos($target, $allowedRoot . DIRECTORY_SEPARATOR) !== 0) {
+                    // Target is outside the allowed root — remove the symlink
+                    @unlink($path);
+                    dol_syslog('Restore::removeEscapingSymlinks - Removed escaping symlink: ' . $path . ' -> ' . ($target ?: 'unresolvable'), LOG_WARNING);
+                }
+            } elseif (is_dir($path)) {
+                $this->removeEscapingSymlinks($path, $allowedRoot);
+            }
+        }
     }
 
     /**

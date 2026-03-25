@@ -53,23 +53,11 @@ class SftpStorage
         // Ensure remote directory exists
         $this->mkdirRecursive($remoteDir);
 
-        $sftpStream = 'ssh2.sftp://' . intval($this->sftp) . $remotePath;
-
-        $localHandle  = fopen($sourcePath, 'rb');
-        $remoteHandle = fopen($sftpStream, 'wb');
-
-        if (!$localHandle || !$remoteHandle) {
-            $this->error = 'Cannot open file handles for SFTP upload.';
-            dol_syslog('SftpStorage::upload - ' . $this->error, LOG_ERR);
-            $this->disconnect();
-            return false;
-        }
-
-        $written = stream_copy_to_stream($localHandle, $remoteHandle);
-        fclose($localHandle);
-        fclose($remoteHandle);
-
-        if ($written === false) {
+        // Use ssh2_scp_send instead of the ssh2.sftp:// stream wrapper.
+        // The stream wrapper requires casting the SFTP resource to int
+        // (intval($this->sftp)), which is deprecated in PHP 8 and returns 0,
+        // producing an invalid stream URL. ssh2_scp_send works on all PHP versions.
+        if (!ssh2_scp_send($this->conn, $sourcePath, $remotePath, 0640)) {
             $this->error = 'SFTP upload failed for: ' . $remotePath;
             dol_syslog('SftpStorage::upload - ' . $this->error, LOG_ERR);
             $this->disconnect();
@@ -93,28 +81,16 @@ class SftpStorage
             return false;
         }
 
-        $sftpStream = 'ssh2.sftp://' . intval($this->sftp) . $storagePath;
-
-        $remoteHandle = fopen($sftpStream, 'rb');
-        $localHandle  = fopen($targetPath, 'wb');
-
-        if (!$remoteHandle || !$localHandle) {
-            $this->error = 'Cannot open file handles for SFTP download.';
+        // Use ssh2_scp_recv instead of the ssh2.sftp:// stream wrapper
+        // to avoid the PHP 8 resource-to-int deprecation (see upload() comment).
+        if (!ssh2_scp_recv($this->conn, $storagePath, $targetPath)) {
+            $this->error = 'SFTP download failed for: ' . $storagePath;
+            dol_syslog('SftpStorage::download - ' . $this->error, LOG_ERR);
             $this->disconnect();
             return false;
         }
 
-        $written = stream_copy_to_stream($remoteHandle, $localHandle);
-        fclose($remoteHandle);
-        fclose($localHandle);
-
         $this->disconnect();
-
-        if ($written === false) {
-            $this->error = 'SFTP download failed for: ' . $storagePath;
-            return false;
-        }
-
         return true;
     }
 
@@ -187,6 +163,29 @@ class SftpStorage
         $authenticated = false;
 
         if (!empty($privateKey) && file_exists($privateKey)) {
+            // Validate that the private key path is within the allowed keys directory
+            // to prevent a compromised admin account from pointing the key path at
+            // arbitrary sensitive files on the server (e.g. /etc/passwd).
+            $allowedKeyDir = defined('DOL_DATA_ROOT') ? rtrim(DOL_DATA_ROOT, '/\\') . '/backuprestore/keys' : '';
+            $realKeyPath   = realpath($privateKey);
+            $realKeyDir    = $allowedKeyDir ? realpath($allowedKeyDir) : false;
+
+            $keyPathAllowed = false;
+            if ($realKeyPath !== false && $realKeyDir !== false) {
+                $keyPathAllowed = (strpos($realKeyPath, $realKeyDir . DIRECTORY_SEPARATOR) === 0);
+            } elseif ($realKeyPath !== false && empty($allowedKeyDir)) {
+                // No DOL_DATA_ROOT available — allow but log a warning
+                $keyPathAllowed = true;
+                dol_syslog('SftpStorage::connect - Cannot validate key path (DOL_DATA_ROOT not defined): ' . $privateKey, LOG_WARNING);
+            }
+
+            if (!$keyPathAllowed) {
+                $this->error = 'SFTP private key path is outside the allowed directory: ' . $privateKey;
+                dol_syslog('SftpStorage::connect - ' . $this->error, LOG_ERR);
+                $this->conn = null;
+                return false;
+            }
+
             $pubKey = $privateKey . '.pub';
             if (file_exists($pubKey)) {
                 $authenticated = @ssh2_auth_pubkey_file($this->conn, $user, $pubKey, $privateKey, $password);

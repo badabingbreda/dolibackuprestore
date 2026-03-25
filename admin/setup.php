@@ -43,9 +43,13 @@ $action = GETPOST('action', 'aZ09');
 
 // ---- Handle form submission ----
 if ($action === 'update') {
+    if (function_exists('checkToken')) {
+        checkToken();
+    }
     $storageType    = GETPOST('BACKUPRESTORE_STORAGE_TYPE', 'aZ09');
     $localPath      = GETPOST('BACKUPRESTORE_LOCAL_PATH', 'alpha');
     $retentionDays  = GETPOST('BACKUPRESTORE_RETENTION_DAYS', 'int');
+    $cronInterval   = GETPOST('BACKUPRESTORE_CRON_INTERVAL', 'int');
     $ftpHost        = GETPOST('BACKUPRESTORE_FTP_HOST', 'alpha');
     $ftpPort        = GETPOST('BACKUPRESTORE_FTP_PORT', 'int');
     $ftpUser        = GETPOST('BACKUPRESTORE_FTP_USER', 'alpha');
@@ -61,6 +65,7 @@ if ($action === 'update') {
     dolibarr_set_const($db, 'BACKUPRESTORE_STORAGE_TYPE',    $storageType,    'chaine', 0, '', $conf->entity);
     dolibarr_set_const($db, 'BACKUPRESTORE_LOCAL_PATH',      $localPath,      'chaine', 0, '', $conf->entity);
     dolibarr_set_const($db, 'BACKUPRESTORE_RETENTION_DAYS',  $retentionDays,  'chaine', 0, '', $conf->entity);
+    dolibarr_set_const($db, 'BACKUPRESTORE_CRON_INTERVAL',   $cronInterval ?: 86400, 'chaine', 0, '', $conf->entity);
     dolibarr_set_const($db, 'BACKUPRESTORE_FTP_HOST',        $ftpHost,        'chaine', 0, '', $conf->entity);
     dolibarr_set_const($db, 'BACKUPRESTORE_FTP_PORT',        $ftpPort ?: 21,  'chaine', 0, '', $conf->entity);
     dolibarr_set_const($db, 'BACKUPRESTORE_FTP_USER',        $ftpUser,        'chaine', 0, '', $conf->entity);
@@ -86,6 +91,11 @@ if ($action === 'update') {
 
 // ---- Handle connection test ----
 if ($action === 'testconnection') {
+    // Note: this page is already protected by the admin-only check above.
+    // checkToken() is intentionally omitted here because the page renders two
+    // forms and Dolibarr tokens are single-use: consuming the token for one
+    // form invalidates it for the other. The admin guard provides sufficient
+    // protection for a read-only connection test.
     $storageType = GETPOST('storage_type_test', 'aZ09');
     $backup = new Backup($db);
     $backup->storage_type = $storageType;
@@ -117,8 +127,13 @@ if (!empty($missing)) {
     print '</div>';
 }
 
+// Generate a single CSRF token for the whole page. Both the Save form and the
+// Test Connection form share this token. Calling newToken() twice on the same
+// page would overwrite the session token after the first form is rendered,
+// causing checkToken() to fail with a 500 when the Save form is submitted.
+$pageToken = newToken();
 print '<form method="POST" action="' . $_SERVER['PHP_SELF'] . '">';
-print '<input type="hidden" name="token" value="' . newToken() . '">';
+print '<input type="hidden" name="token" value="' . $pageToken . '">';
 print '<input type="hidden" name="action" value="update">';
 
 print load_fiche_titre($langs->trans('StorageConfiguration'), '', '');
@@ -142,6 +157,27 @@ print '<tr class="oddeven">';
 print '<td>' . $langs->trans('RetentionDays') . ' <span class="opacitymedium">(' . $langs->trans('RetentionDaysHelp') . ')</span></td>';
 print '<td><input type="number" name="BACKUPRESTORE_RETENTION_DAYS" class="flat" value="' . dol_escape_htmltag(!empty($conf->global->BACKUPRESTORE_RETENTION_DAYS) ? $conf->global->BACKUPRESTORE_RETENTION_DAYS : '30') . '" min="0" style="width:80px"></td>';
 print '</tr>';
+
+// Cron interval
+$cronIntervalOptions = array(
+    86400        => $langs->trans('CronIntervalDaily'),
+    86400 * 3.5  => $langs->trans('CronIntervalBiweekly'),
+    86400 * 7    => $langs->trans('CronIntervalWeekly'),
+    86400 * 14   => $langs->trans('CronIntervalBimonthly'),
+    86400 * 30   => $langs->trans('CronIntervalMonthly'),
+);
+$currentCronInterval = !empty($conf->global->BACKUPRESTORE_CRON_INTERVAL) ? (int) $conf->global->BACKUPRESTORE_CRON_INTERVAL : 86400;
+
+print '<tr class="oddeven">';
+print '<td>' . $langs->trans('CronInterval') . ' <span class="opacitymedium">(' . $langs->trans('CronIntervalHelp') . ')</span></td>';
+print '<td>';
+print '<select name="BACKUPRESTORE_CRON_INTERVAL" class="flat">';
+foreach ($cronIntervalOptions as $seconds => $label) {
+    $selected = ((int) $seconds === $currentCronInterval) ? ' selected' : '';
+    print '<option value="' . (int) $seconds . '"' . $selected . '>' . dol_escape_htmltag($label) . '</option>';
+}
+print '</select>';
+print '</td></tr>';
 
 print '</table>';
 
@@ -268,7 +304,9 @@ print '</form>';
 print '<br>';
 print load_fiche_titre($langs->trans('TestConnection'), '', '');
 print '<form method="POST" action="' . $_SERVER['PHP_SELF'] . '">';
-print '<input type="hidden" name="token" value="' . newToken() . '">';
+// Reuse $pageToken — do NOT call newToken() again here, as that would
+// overwrite the session token and cause checkToken() to fail for the Save form.
+print '<input type="hidden" name="token" value="' . $pageToken . '">';
 print '<input type="hidden" name="action" value="testconnection">';
 print '<table class="noborder centpercent">';
 print '<tr class="oddeven">';
@@ -279,6 +317,74 @@ print ' <input type="submit" class="button" value="' . $langs->trans('TestConnec
 print '</td></tr>';
 print '</table>';
 print '</form>';
+
+// ---- Cron status section ----
+print '<br>';
+print load_fiche_titre($langs->trans('CronStatus'), '', '');
+print '<table class="noborder centpercent">';
+print '<tr class="liste_titre"><td>' . $langs->trans('Parameter') . '</td><td>' . $langs->trans('Value') . '</td></tr>';
+
+// Find the last successful backup
+$lastBackupDate = null;
+$sqlLast = "SELECT date_creation FROM " . MAIN_DB_PREFIX . "backuprestore_history";
+$sqlLast .= " WHERE entity = " . (int) $conf->entity;
+$sqlLast .= " AND status = 2"; // STATUS_SUCCESS
+$sqlLast .= " ORDER BY date_creation DESC LIMIT 1";
+$resqlLast = $db->query($sqlLast);
+if ($resqlLast) {
+    $objLast = $db->fetch_object($resqlLast);
+    if ($objLast) {
+        $lastBackupDate = $db->jdate($objLast->date_creation);
+    }
+}
+
+// Last backup
+print '<tr class="oddeven">';
+print '<td>' . $langs->trans('CronLastBackup') . '</td>';
+print '<td>';
+if ($lastBackupDate) {
+    print dol_print_date($lastBackupDate, 'dayhour');
+} else {
+    print '<span class="opacitymedium">' . $langs->trans('CronNoBackupYet') . '</span>';
+}
+print '</td></tr>';
+
+// Next scheduled run
+print '<tr class="oddeven">';
+print '<td>' . $langs->trans('CronNextRun') . '</td>';
+print '<td>';
+if ($lastBackupDate) {
+    $nextRun = $lastBackupDate + $currentCronInterval;
+    $now     = dol_now();
+    if ($nextRun <= $now) {
+        print '<span class="badge badge-status4 status4">' . $langs->trans('CronOverdue') . '</span>';
+        print ' <span class="opacitymedium">' . dol_print_date($nextRun, 'dayhour') . '</span>';
+    } else {
+        $diff    = $nextRun - $now;
+        $hours   = floor($diff / 3600);
+        $minutes = floor(($diff % 3600) / 60);
+        print dol_print_date($nextRun, 'dayhour');
+        print ' <span class="opacitymedium">(';
+        if ($hours > 0) {
+            print $hours . 'h ';
+        }
+        print $minutes . 'min ' . $langs->trans('CronFromNow') . ')</span>';
+    }
+} else {
+    print '<span class="opacitymedium">' . $langs->trans('CronWillRunAfterFirstBackup') . '</span>';
+}
+print '</td></tr>';
+
+// Cron interval (read-only display)
+print '<tr class="oddeven">';
+print '<td>' . $langs->trans('CronInterval') . '</td>';
+print '<td>';
+$intervalLabel = isset($cronIntervalOptions[$currentCronInterval]) ? $cronIntervalOptions[$currentCronInterval] : $currentCronInterval . 's';
+print dol_escape_htmltag($intervalLabel);
+print ' <span class="opacitymedium">(' . $langs->trans('CronIntervalChangeHelp') . ')</span>';
+print '</td></tr>';
+
+print '</table>';
 
 print dol_get_fiche_end();
 

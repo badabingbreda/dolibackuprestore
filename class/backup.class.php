@@ -262,7 +262,9 @@ class Backup extends CommonObject
 
         // Ensure temp directory exists and is writable
         if (!is_dir($tempDir)) {
-            @mkdir($tempDir, 0755, true);
+            if (!@mkdir($tempDir, 0755, true)) {
+                dol_syslog('Backup::run - Cannot create temp directory: ' . $tempDir, LOG_WARNING);
+            }
         }
         if (!is_dir($tempDir) || !is_writable($tempDir)) {
             $this->error = 'Temp directory is not writable: ' . $tempDir;
@@ -430,12 +432,26 @@ class Backup extends CommonObject
             return $output;
         }
 
-        // Fetch all rows in batches to avoid memory issues
+        // Determine the primary key column for stable ORDER BY across batches.
+        // Using ORDER BY on a unique, non-nullable column guarantees that LIMIT/OFFSET
+        // pagination never skips or duplicates rows, even when the engine's default
+        // sort order is non-deterministic (e.g. InnoDB with concurrent writes).
+        // Fall back to ORDER BY 1 only when no PRIMARY KEY is defined (e.g. views, log tables).
+        $orderByCol = '1';
+        $resqlPk = $this->db->query("SHOW KEYS FROM `$table` WHERE Key_name = 'PRIMARY'");
+        if ($resqlPk) {
+            $pkRow = $this->db->fetch_object($resqlPk);
+            if ($pkRow && !empty($pkRow->Column_name)) {
+                $orderByCol = '`' . $pkRow->Column_name . '`';
+            }
+        }
+
+        // Fetch all rows in batches to avoid memory issues.
         $batchSize = 500;
         $offset    = 0;
 
         while ($offset < $rowCount) {
-            $resqlData = $this->db->query("SELECT * FROM `$table` LIMIT $batchSize OFFSET $offset");
+            $resqlData = $this->db->query("SELECT * FROM `$table` ORDER BY $orderByCol LIMIT $batchSize OFFSET $offset");
             if (!$resqlData) {
                 break;
             }
@@ -718,7 +734,25 @@ class Backup extends CommonObject
     {
         global $conf, $user;
 
-        $storageType = !empty($conf->global->BACKUPRESTORE_STORAGE_TYPE) ? $conf->global->BACKUPRESTORE_STORAGE_TYPE : 'local';
+        $storageType  = !empty($conf->global->BACKUPRESTORE_STORAGE_TYPE) ? $conf->global->BACKUPRESTORE_STORAGE_TYPE : 'local';
+        $cronInterval = !empty($conf->global->BACKUPRESTORE_CRON_INTERVAL) ? (int) $conf->global->BACKUPRESTORE_CRON_INTERVAL : 86400;
+
+        // Check if enough time has passed since the last successful backup
+        $sqlLast = "SELECT date_creation FROM " . MAIN_DB_PREFIX . "backuprestore_history";
+        $sqlLast .= " WHERE entity = " . (int) $conf->entity . " AND status = " . self::STATUS_SUCCESS;
+        $sqlLast .= " ORDER BY date_creation DESC LIMIT 1";
+        $resqlLast = $this->db->query($sqlLast);
+        if ($resqlLast) {
+            $objLast = $this->db->fetch_object($resqlLast);
+            if ($objLast) {
+                $lastRun = $this->db->jdate($objLast->date_creation);
+                if ((dol_now() - $lastRun) < $cronInterval) {
+                    dol_syslog('BackupRestore::runScheduledBackup - Skipping, interval not reached yet', LOG_DEBUG);
+                    return 0;
+                }
+            }
+        }
+
         $result = $this->run($user, 'full', $storageType, 'Scheduled automatic backup');
 
         if ($result < 0) {
