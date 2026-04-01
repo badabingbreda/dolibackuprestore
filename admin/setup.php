@@ -49,7 +49,9 @@ if ($action === 'update') {
     $storageType    = GETPOST('BACKUPRESTORE_STORAGE_TYPE', 'aZ09');
     $localPath      = GETPOST('BACKUPRESTORE_LOCAL_PATH', 'alpha');
     $retentionDays  = GETPOST('BACKUPRESTORE_RETENTION_DAYS', 'int');
-    $cronInterval   = GETPOST('BACKUPRESTORE_CRON_INTERVAL', 'int');
+    // Use 'alpha' (digits pass through) instead of 'int' so that the value "0"
+    // (Disabled) is not silently dropped by Dolibarr's int sanitiser on some versions.
+    $cronInterval   = GETPOST('BACKUPRESTORE_CRON_INTERVAL', 'alpha');
     $ftpHost        = GETPOST('BACKUPRESTORE_FTP_HOST', 'alpha');
     $ftpPort        = GETPOST('BACKUPRESTORE_FTP_PORT', 'int');
     $ftpUser        = GETPOST('BACKUPRESTORE_FTP_USER', 'alpha');
@@ -65,7 +67,40 @@ if ($action === 'update') {
     dolibarr_set_const($db, 'BACKUPRESTORE_STORAGE_TYPE',    $storageType,    'chaine', 0, '', $conf->entity);
     dolibarr_set_const($db, 'BACKUPRESTORE_LOCAL_PATH',      $localPath,      'chaine', 0, '', $conf->entity);
     dolibarr_set_const($db, 'BACKUPRESTORE_RETENTION_DAYS',  $retentionDays,  'chaine', 0, '', $conf->entity);
-    dolibarr_set_const($db, 'BACKUPRESTORE_CRON_INTERVAL',   $cronInterval ?: 86400, 'chaine', 0, '', $conf->entity);
+    // 0 means "disabled" — store it as-is; any non-numeric or blank value falls back to daily
+    $cronIntervalToSave = (is_numeric($cronInterval)) ? (int) $cronInterval : 86400;
+    dolibarr_set_const($db, 'BACKUPRESTORE_CRON_INTERVAL', $cronIntervalToSave, 'chaine', 0, '', $conf->entity);
+
+    // Sync the llx_cronjob row so Dolibarr's own scheduler fires at the right time.
+    // Dolibarr identifies the row by its label (unique key: label+entity).
+    // It schedules the next run as: datenextrun = datelastrun + (frequency × unitfrequency).
+    // We keep frequency=1 and set unitfrequency to the total seconds.
+    // We also push datenextrun forward by the new interval so the job doesn't fire
+    // immediately after a frequency change.
+    // When "Disabled" (0) is chosen we only flip status=0; frequency columns are left
+    // unchanged because the job won't run anyway.
+    $cronJobStatus = ($cronIntervalToSave === 0) ? 0 : 1;
+    $cronUnitFreq  = ($cronIntervalToSave > 0)  ? $cronIntervalToSave : 86400;
+    if ($cronIntervalToSave > 0) {
+        $newNextRun = $db->idate(dol_now() + $cronUnitFreq);
+        $db->query(
+            "UPDATE " . MAIN_DB_PREFIX . "cronjob"
+            . " SET status = "          . (int) $cronJobStatus
+            . ", frequency = 1"
+            . ", unitfrequency = '"     . (int) $cronUnitFreq . "'"
+            . ", datenextrun = '"       . $db->escape($newNextRun) . "'"
+            . " WHERE label = 'AutomaticBackupCron'"
+            . " AND entity = "          . (int) $conf->entity
+        );
+    } else {
+        // Disabled: only update status, leave schedule columns intact
+        $db->query(
+            "UPDATE " . MAIN_DB_PREFIX . "cronjob"
+            . " SET status = 0"
+            . " WHERE label = 'AutomaticBackupCron'"
+            . " AND entity = "  . (int) $conf->entity
+        );
+    }
     dolibarr_set_const($db, 'BACKUPRESTORE_FTP_HOST',        $ftpHost,        'chaine', 0, '', $conf->entity);
     dolibarr_set_const($db, 'BACKUPRESTORE_FTP_PORT',        $ftpPort ?: 21,  'chaine', 0, '', $conf->entity);
     dolibarr_set_const($db, 'BACKUPRESTORE_FTP_USER',        $ftpUser,        'chaine', 0, '', $conf->entity);
@@ -160,13 +195,17 @@ print '</tr>';
 
 // Cron interval
 $cronIntervalOptions = array(
+    0            => $langs->trans('CronIntervalDisabled'),
     86400        => $langs->trans('CronIntervalDaily'),
     86400 * 3.5  => $langs->trans('CronIntervalBiweekly'),
     86400 * 7    => $langs->trans('CronIntervalWeekly'),
     86400 * 14   => $langs->trans('CronIntervalBimonthly'),
     86400 * 30   => $langs->trans('CronIntervalMonthly'),
 );
-$currentCronInterval = !empty($conf->global->BACKUPRESTORE_CRON_INTERVAL) ? (int) $conf->global->BACKUPRESTORE_CRON_INTERVAL : 86400;
+// Use isset + strlen so that the stored value "0" (Disabled) is not treated as absent by !empty()
+$currentCronInterval = (isset($conf->global->BACKUPRESTORE_CRON_INTERVAL) && strlen($conf->global->BACKUPRESTORE_CRON_INTERVAL) > 0)
+    ? (int) $conf->global->BACKUPRESTORE_CRON_INTERVAL
+    : 86400;
 
 print '<tr class="oddeven">';
 print '<td>' . $langs->trans('CronInterval') . ' <span class="opacitymedium">(' . $langs->trans('CronIntervalHelp') . ')</span></td>';
@@ -379,7 +418,9 @@ print '</td></tr>';
 print '<tr class="oddeven">';
 print '<td>' . $langs->trans('CronNextRun') . '</td>';
 print '<td>';
-if ($lastBackupDate) {
+if ($currentCronInterval === 0) {
+    print '<span class="badge badge-status8 status8">' . $langs->trans('CronIntervalDisabled') . '</span>';
+} elseif ($lastBackupDate) {
     $nextRun = $lastBackupDate + $currentCronInterval;
     $now     = dol_now();
     if ($nextRun <= $now) {

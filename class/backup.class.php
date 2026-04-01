@@ -745,7 +745,13 @@ class Backup extends CommonObject
         global $conf, $user;
 
         $storageType  = !empty($conf->global->BACKUPRESTORE_STORAGE_TYPE) ? $conf->global->BACKUPRESTORE_STORAGE_TYPE : 'local';
-        $cronInterval = !empty($conf->global->BACKUPRESTORE_CRON_INTERVAL) ? (int) $conf->global->BACKUPRESTORE_CRON_INTERVAL : 86400;
+        $cronInterval = isset($conf->global->BACKUPRESTORE_CRON_INTERVAL) ? (int) $conf->global->BACKUPRESTORE_CRON_INTERVAL : 86400;
+
+        // Interval 0 means the scheduled backup has been explicitly disabled by the user
+        if ($cronInterval === 0) {
+            dol_syslog('BackupRestore::runScheduledBackup - Scheduled backup is disabled (interval = 0)', LOG_DEBUG);
+            return 0;
+        }
 
         // Check if enough time has passed since the last successful backup
         $sqlLast = "SELECT date_creation FROM " . MAIN_DB_PREFIX . "backuprestore_history";

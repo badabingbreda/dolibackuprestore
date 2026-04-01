@@ -66,6 +66,7 @@ RetentionDaysHelp=Number of days to keep backups. Set to 0 to disable automatic 
 CronInterval=Backup frequency
 CronIntervalHelp=How often the scheduled automatic backup runs
 CronIntervalChangeHelp=Change above in Storage Configuration
+CronIntervalDisabled=Disabled (no automatic backup)
 CronIntervalDaily=Daily
 CronIntervalBiweekly=Every 3.5 days (bi-weekly)
 CronIntervalWeekly=Weekly

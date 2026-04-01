@@ -132,7 +132,7 @@ class modBackuprestore extends DolibarrModules
                 'comment'   => 'Automatic scheduled backup of database and documents',
                 'frequency' => 1,
                 'unitfrequency' => 86400, // daily
-                'status'    => 0,
+                'status'    => 1,
                 'test'      => true,
                 'priority'  => 50,
             ),
@@ -268,7 +268,45 @@ class modBackuprestore extends DolibarrModules
             }
         }
 
-        return $this->_init(array(), $options);
+        $result = $this->_init(array(), $options);
+        if ($result <= 0) {
+            return $result;
+        }
+
+        // After _init() seeds the cronjob row (always with the hard-coded daily defaults),
+        // immediately overwrite frequency+unitfrequency with whatever the admin has configured
+        // so that re-activating the module respects the saved setting.
+        $savedInterval = (isset($conf->global->BACKUPRESTORE_CRON_INTERVAL) && strlen($conf->global->BACKUPRESTORE_CRON_INTERVAL) > 0)
+            ? (int) $conf->global->BACKUPRESTORE_CRON_INTERVAL
+            : 86400; // fall back to daily when no setting exists yet
+
+        $cronStatus   = ($savedInterval === 0) ? 0 : 1;
+        $cronUnitFreq = ($savedInterval  >  0) ? $savedInterval : 86400;
+
+        // Identify the row by label+entity (Dolibarr's unique key for cronjobs).
+        // Also set datenextrun = now + interval so the job doesn't fire immediately
+        // after module activation when a non-default frequency is configured.
+        if ($savedInterval > 0) {
+            $newNextRun = $this->db->idate(dol_now() + $cronUnitFreq);
+            $this->db->query(
+                "UPDATE " . MAIN_DB_PREFIX . "cronjob"
+                . " SET status = "      . (int) $cronStatus
+                . ", frequency = 1"
+                . ", unitfrequency = '" . (int) $cronUnitFreq . "'"
+                . ", datenextrun = '"   . $this->db->escape($newNextRun) . "'"
+                . " WHERE label = 'AutomaticBackupCron'"
+                . " AND entity = "      . (int) $conf->entity
+            );
+        } else {
+            $this->db->query(
+                "UPDATE " . MAIN_DB_PREFIX . "cronjob"
+                . " SET status = 0"
+                . " WHERE label = 'AutomaticBackupCron'"
+                . " AND entity = "  . (int) $conf->entity
+            );
+        }
+
+        return $result;
     }
 
     /**
